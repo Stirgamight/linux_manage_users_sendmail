@@ -1,0 +1,122 @@
+Installing sendmail, configuring mail relay
+---------------------------------------------
+References:
+-> Sendmail cookbook
+-> https://linuxconfig.org/configuring-gmail-as-sendmail-email-relay
+-> https://www.howtoforge.com/howto_sendmail_smtp_auth_tls
+#####################################################################################################################
+#firstly:
+dnf install sendmail
+dnf install sendmail-cf
+dnf install make
+#after sendmail installation, you should be able to find:
+#/etc/pki/tls/certs
+#/etc/pki/tls/certs/ca-bundle.crt
+#/etc/pki/tls/certs/sendmail.pem
+#/etc/pki/tls/private/sendmail.key
+
+#if not found:
+wget http://www.openssl.org/source/openssl-<openssl release>.tar.gz
+tar xvfz openssl-0.9.7c.tar.gz
+cd openssl-0.9.7c
+./config
+make
+make install
+ln -s /usr/local/ssl/bin/openssl /usr/bin/openssl
+
+cd /tmp
+wget --passive-ftp ftp://ftp.andrew.cmu.edu/pub/cyrus-mail/cyrus-sasl-2.1.17.tar.gz
+tar xvfz cyrus-sasl-2.1.17.tar.gz
+cd cyrus-sasl-2.1.17
+./configure --enable-anon --enable-plain --enable-login --disable-krb4 --with-saslauthd=/var/run/saslauthd --with-pam --with-openssl=/usr/local/ssl --with-plugindir=/usr/local/lib/sasl2 --enable-cram --enable-digest --enable-otp (1 line!)
+make
+make install
+
+If /usr/lib/sasl2 exists:
+mv /usr/lib/sasl2 /usr/lib/sasl2_orig
+
+echo "pwcheck_method: saslauthd" > /usr/local/lib/sasl2/Sendmail.conf
+echo "mech_list: login plain" >> /usr/local/lib/sasl2/Sendmail.conf
+
+mkdir -p /var/run/saslauthd
+
+#creating certificates
+mkdir -p /etc/mail/certs
+cd /etc/mail/certs
+openssl req -new -x509 -keyout cakey.pem -out cacert.pem -days 365
+
+openssl req -nodes -new -x509 -keyout sendmail.pem -out sendmail.pem -days 365
+
+#Using a text editor, open /etc/mail/sendmail.mc
+#Add the following lines at the beginning of the file:
+define(`confCACERT_PATH', `/etc/mail/certs')dnl
+define(`confCACERT', `/etc/mail/certs/cacert.pem')dnl
+define(`confSERVER_CERT', `/etc/mail/certs/sendmail.pem')dnl
+define(`confSERVER_KEY', `/etc/mail/certs/sendmail.pem')dnl
+define(`confCLIENT_CERT', `/etc/mail/certs/sendmail.pem')dnl
+define(`confCLIENT_KEY', `/etc/mail/certs/sendmail.pem')dnl
+DAEMON_OPTIONS(`Port=smtp,Addr=127.0.0.1, Name=MTA')dnl
+
+
+#uesrname and password
+mkdir -m 700 /etc/mail/authinfo/
+cd /etc/mail/authinfo/
+vim /etc/mail/authinfo/gmail-auth
+#paste and modify this
+#check note: 1
+AuthInfo: "U:root" "I:YOUR GMAIL EMAIL ADDRESS" "P:YOUR PASSWORD"
+:wq
+
+makemap hash /etc/mail/authinfo/gmail-auth < /etc/mail/authinfo/gmail-auth
+
+#At the end of /etc/mail/sendmail.mc, right above the "MAILER" lines, add the following lines
+define(`SMART_HOST',`[smtp.gmail.com]')dnl
+define(`RELAY_MAILER_ARGS', `TCP $h 587')dnl
+define(`ESMTP_MAILER_ARGS', `TCP $h 587')dnl
+define(`confAUTH_OPTIONS', `A p')dnl
+TRUST_AUTH_MECH(`EXTERNAL DIGEST-MD5 CRAM-MD5 LOGIN PLAIN')dnl
+define(`confAUTH_MECHANISMS', `EXTERNAL GSSAPI DIGEST-MD5 CRAM-MD5 LOGIN PLAIN')dnl
+FEATURE(`authinfo',`hash -o /etc/mail/authinfo/gmail-auth.db')dnl
+:wq
+
+
+
+#finally, add an FQDN in /etc/hosts
+#to get your FQDN,
+hostname
+
+
+#then add it to the end of the first line of /etc/hosts
+#it should look like this:
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4 amrIbrahim
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+
+
+#sendmail should be ready
+make -C /etc/mail
+systemctl restart saslauthd.service
+systemctl restart sendmail.service
+
+#Test
+echo "Subject: Hi" | sendmail -Am -v -t -f <sender mail (the one in /etc/mail/authinfo/gmail-auth)>  <recipient mail>
+
+######################################################/###\##########################################################
+#####################################################/NOTES\#########################################################
+#####################################################\#####/#########################################################
+
+#1#For this to work, you need to enable two step authentication for your google account
+#After that, create a new application password, copy it and paste in /etc/mail/authinfo/gmail-auth password area
+#otherwise, you log-in won't be accepted:
+#error: User name and password not accepted
+
+
+
+#2# If saslauthd is dead or not working, gmail will always return an authentication error:
+#530-5.7.0 Authentication required
+#make sure the service is up and running, no problems with the certs and username and password are correct
+
+#3# If sendmail doesn't start TLS, the error mentioned in #2# will emerge.
+
+#4# Adding the FQDN to /etc/hosts can cause problems; such as: 530-5.7.0 Authentication required or username and password
+#not accepted, or mail loopback (for some reason), if you face a problem, try to remove the FQDN, sendmail will 
+#be a bit laggy, but it should work
